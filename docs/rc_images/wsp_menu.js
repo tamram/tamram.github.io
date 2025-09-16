@@ -4,10 +4,58 @@
 // elementid: Element id of the root menu item
 // animations: combination of 'fadeMenus', 'moveHeight'
 // openViaMouseHovering: if set to true, on desktop, open menu already via mouse hovering. If set to false, only close and open the menu when clicked or touched.
-function wsp_menu(elementid, menuidsuffix, panepadding, animations, openViaMouseHovering)
+
+function wsp_menu(elementid, menuidsuffix, panepadding, animations, openViaMouseHovering, advancedOptions)
 {
 	this.menuElementSubMenuParent = document.getElementById(elementid);
 	this.menuElementEntryHolder = null;
+	
+	this.generateAriaLabels = true;
+	this.setUsefulTabIndices = true;
+	this.closeWhenMouseOut = false;
+	this.mobileMenuIsFullscreen = false;
+	this.mobileMenuCloseButtonColor = '#A3A3A3';
+	
+	this.UseAnimationForAll = animations != null; // animation setting for all menupanes
+	this.EnabledAnimationsForAll = animations; // animations to be used for all menupanes
+	
+	this.UseAnimationForMobileMenu = animations != null;  // animation setting for mobile menupanes
+	this.EnabledAnimationsForMobileMenu = animations; // animations to be used for mobile menupanes
+	this.MenuPaddingUsed = 0;
+	
+	if (advancedOptions)
+	{
+		// generate missing aria labels
+		if (typeof advancedOptions.generateAriaLabels != 'undefined')
+			this.generateAriaLabels = advancedOptions.generateAriaLabels;
+		
+		// auto set tab indices
+		if (typeof advancedOptions.setUsefulTabIndices != 'undefined')
+			this.setUsefulTabIndices = advancedOptions.setUsefulTabIndices;
+		
+		// close when mouse out option
+		if (typeof advancedOptions.closeWhenMouseOut != 'undefined')
+			this.closeWhenMouseOut = advancedOptions.closeWhenMouseOut;
+		
+		// mobile menu is fullscreen
+		if (typeof advancedOptions.mobileMenuIsFullscreen != 'undefined')
+			this.mobileMenuIsFullscreen = advancedOptions.mobileMenuIsFullscreen;
+		
+		// mobile menu close button color
+		if (typeof advancedOptions.mobileMenuCloseButtonColor != 'undefined')
+			this.mobileMenuCloseButtonColor = advancedOptions.mobileMenuCloseButtonColor;
+		
+		// used padding for menu so we can scroll the fullscreen mobile menu correctly
+		if (typeof advancedOptions.menuPaddingUsed != 'undefined')
+			this.MenuPaddingUsed = advancedOptions.menuPaddingUsed;
+		
+		// forced animations for mobile menu
+		if (typeof advancedOptions.mobileMenuAnimations != 'undefined')
+		{
+			this.UseAnimationForMobileMenu = advancedOptions.mobileMenuAnimations != null;
+			this.EnabledAnimationsForMobileMenu = advancedOptions.mobileMenuAnimations;
+		}
+	}
 	
 	if (this.menuElementSubMenuParent)
 	{
@@ -36,10 +84,18 @@ function wsp_menu(elementid, menuidsuffix, panepadding, animations, openViaMouse
 	this.initialClientHeight = 0;
 	this.currentlyVisibleMenuPane = null;
 	this.openViaMouseHovering = openViaMouseHovering; 
+	this.openAndCloseViaClick = !openViaMouseHovering
 	WspMenusLastTimeClicked = 0;  // global if using more than one menu
 	this.LastOpenedSubMenu = null;
-	this.UseAnimation = animations != null;
-	this.EnabledAnimations = animations;
+	this.TimeLastMenuFocused = 0;
+	
+	if ( typeof document["wspMenuGlobalTabIndex"] == "undefined" )
+	{
+		if (this.setUsefulTabIndices)
+			document.wspMenuGlobalTabIndex = 1; // variable for global tabindex tracking in case we have more than one menu
+		else
+			document.wspMenuGlobalTabIndex = 0; // keep at 0 and let browser assign tab indices
+	}
 	
 	try {
 		if (wsp_allmenus == null)
@@ -52,7 +108,17 @@ function wsp_menu(elementid, menuidsuffix, panepadding, animations, openViaMouse
 	wsp_allmenus.push(this);
 	
 	var me = this;
-	document.onclick = function() { me.clickedOutside(); };
+	
+	document.addEventListener("click", function(e) { me.clickedOutside(); } );
+	
+	if (this.closeWhenMouseOut)
+	{
+		document.addEventListener("mousemove", function(e)
+		{ 
+			me.closeMenuWhenFocusedElementIsNotPartOfMenu(e.target);  
+		});		
+	}
+				
 
 	if (this.menuElementSubMenuParent != null)
 		this.menuElementSubMenuParent.style.overflow = "visible";
@@ -61,24 +127,81 @@ function wsp_menu(elementid, menuidsuffix, panepadding, animations, openViaMouse
 		this.menuElementEntryHolder.style.overflow = "hidden";
 	
 	
-	this.createMenuForItem = function(menuelementid, elementData)
+	this.createMenuForItem = function(menuelementid, elementData, isForMobileMenu)
 	{
-		var e = document.getElementById(menuelementid);
-		if (e == null)
+		var elm = document.getElementById(menuelementid);
+		if (elm == null)
 			return;
-			
-		this.rootMenuElements.push(e);
-		var menupane = this.createMenuElements(e, elementData, false);
-		this.menuPanes.push(menupane);
 		
+		elm.tabIndex = document.wspMenuGlobalTabIndex; // ensure focusable by keyboard
+		if (this.setUsefulTabIndices)
+			document.wspMenuGlobalTabIndex += 1;
+		
+		this.rootMenuElements.push(elm);
+		var menupane = this.createMenuElements(elm, elementData, false, isForMobileMenu);
+		this.menuPanes.push(menupane);
+				
 		var me = this;
-		e.onclick = function(e)  { me.onMenuitemHovered(this, true); };
-		if (this.openViaMouseHovering)
-			e.onmouseover = function(e) { me.onMenuitemHovered(this, false); };
+		var openAndCloseViaClick = me.openAndCloseViaClick;
+		if (isForMobileMenu && me.mobileMenuIsFullscreen) 
+			openAndCloseViaClick = true; // for fullscreen mobile menu, force opening and closing via click so that it closes again when clicked on the menu button again, that's what users expect how it works
+		
+		elm.openAndCloseViaClick = openAndCloseViaClick;
+		
+		elm.onclick = function(e)  
+		{ 
+			if (openAndCloseViaClick && (me.getTimeMs() - me.TimeLastMenuFocused)< 250) // when menu is in click mode, we get focus and then click event. Prevent closing again in this case.
+				return;
+		
+			me.onMenuitemHoveredOrClicked(this, true); 
+		};
+		
+		elm.onfocus = function(e)   // support for tab traversal of menu: open menu when focused
+		{
+			me.TimeLastMenuFocused = me.getTimeMs(); // when menu is in click mode (openAndCloseViaClick), we get focus and then click event. Record time to prevent closing again in this case.
+			
+			me.onMenuitemHoveredOrClicked(this, true); 
+		}; 
+		
+		var onfocusoutfunction = function(e) { me.closeMenuWhenFocusedElementIsNotPartOfMenu(e.relatedTarget); };
+		elm.addEventListener("focusout", onfocusoutfunction );	
+		
+		var needsTouchForOpeningNotHover = isForMobileMenu && this.mobileMenuIsFullscreen; // when mobile menu is fullscreen, users won't like it when it opens via hover
+		
+		if (this.openViaMouseHovering && !needsTouchForOpeningNotHover)
+			elm.onmouseover = function(e) { me.onMenuitemHoveredOrClicked(this, false); };		
 	}
 	
 	
-	this.createMenuElements = function(htmlelement, elementData, issubmenu)
+	this.isElementPartOfTheMenu = function(elem)
+	{
+		var test = elem;
+		var isInMenu = false;
+		
+		while(test)
+		{
+			if (this.menuElementSubMenuParent === test ||
+				this.menuElementEntryHolder == test)
+			{
+				isInMenu = true;
+				break;
+			}
+			
+			test = test.parentNode;
+		}
+		
+		return isInMenu;
+	}
+	
+	
+	this.closeMenuWhenFocusedElementIsNotPartOfMenu = function(newElementWithFocus)
+	{				
+		if (!this.isElementPartOfTheMenu(newElementWithFocus))
+			this.closeAllMenus();
+	}
+	
+	
+	this.createMenuElements = function(htmlelement, elementData, issubmenu, isForMobileMenu)
 	{
 		if (htmlelement == null)
 			return;
@@ -100,7 +223,22 @@ function wsp_menu(elementid, menuidsuffix, panepadding, animations, openViaMouse
 		menupane.style.visibility = 'hidden';	
 		menupane.style.display = 'block';	
 		
-		if (this.UseAnimation && this.isUsingFadeMenuPaneAnimations())
+		// copy animation settings for this pane
+		
+		if (isForMobileMenu)
+		{
+			menupane.UseAnimation = this.UseAnimationForMobileMenu;
+			menupane.EnabledAnimations = this.EnabledAnimationsForMobileMenu;
+		}
+		else
+		{
+			menupane.UseAnimation = this.UseAnimationForAll;
+			menupane.EnabledAnimations = this.EnabledAnimationsForAll;
+		}
+		
+		// set style based on animation
+				
+		if (menupane.UseAnimation && this.isUsingFadeMenuPaneAnimations(menupane))
 			menupane.style.transition = "opacity 0.5s ease-out";
 		
 		this.menuElementSubMenuParent.appendChild(menupane);	
@@ -144,8 +282,14 @@ function wsp_menu(elementid, menuidsuffix, panepadding, animations, openViaMouse
 			this.menuElementEntryHolder.removeChild(testElement);
 			
 			// now create real element		
-			var aentry = document.createElement("a");			
+			var aentry = document.createElement("a");	
+			aentry.tabIndex = -1;			
+			
 			var menuentry = document.createElement("div");
+			
+			menuentry.tabIndex = document.wspMenuGlobalTabIndex; // ensure focusable by keyboard
+			if (this.setUsefulTabIndices)
+				document.wspMenuGlobalTabIndex += 1;
 			
 			var txt = null;
 			
@@ -169,9 +313,18 @@ function wsp_menu(elementid, menuidsuffix, panepadding, animations, openViaMouse
 				var submenu = this.createMenuElements(menupane, elementContent, true);
 				menupane.subMenus.push(submenu);
 							
-				menuentry.onclick = function(me, submenu) { return function() { me.onSubMenuEntryHovered(submenu); } }(me, submenu);
-				menuentry.onmouseover = function(me, submenu) { return function() { me.onSubMenuEntryHovered(submenu); } }(me, submenu);
-				
+				menuentry.onclick = 
+					function(me, submenu) { return function() { me.onSubMenuEntryHovered(submenu); } }(me, submenu);
+					
+				menuentry.onmouseover = 
+					function(me, submenu) { return function() { me.onSubMenuEntryHovered(submenu); } }(me, submenu);
+					
+				menuentry.onfocus = 
+					function(me, submenu) { return function() { me.onSubMenuEntryHovered(submenu); } }(me, submenu); // support for tab traversal of menu: open menu when focused
+					
+				var onfocusoutfunction = function(me, submenu) { return function(e) { me.closeMenuWhenFocusedElementIsNotPartOfMenu(e.relatedTarget); } }(me, submenu);
+				menuentry.addEventListener("focusout", onfocusoutfunction );					
+								
 				submenusExist = true;
 			}
 			else
@@ -181,6 +334,22 @@ function wsp_menu(elementid, menuidsuffix, panepadding, animations, openViaMouse
 				
 				if (elementTarget != null && elementTarget != '')
 					aentry.setAttribute('target', elementTarget);
+				
+				// write to use link as tabindex, so that links can be activated using ENTER
+				var oldTabIndex = menuentry.tabIndex;
+				menuentry.tabIndex = -1;
+				aentry.tabIndex = oldTabIndex;	
+				
+				var onfocusoutfunction = function(me) { return function(e) { me.closeMenuWhenFocusedElementIsNotPartOfMenu(e.relatedTarget); } }(me);		
+				aentry.addEventListener("focusout", onfocusoutfunction );
+
+				// aria label				
+				if (this.generateAriaLabels)
+				{
+					var label = testElement.innerText || testElement.textContent;
+					if (label)
+						aentry.ariaLabel = label.trim();
+				}
 			}
 			
 			menuentry.id = this.menuidsuffix + "_entry";
@@ -204,10 +373,72 @@ function wsp_menu(elementid, menuidsuffix, panepadding, animations, openViaMouse
 		menupane.style.whiteSpace = 'nowrap'; // in case for embedded images
 		menupane.aentries = aentries;
 		
+		if (isForMobileMenu && this.mobileMenuIsFullscreen)
+		{		
+			// make mobile menu fullscreen with close button
+			menupane.style.width = "100vw";
+			menupane.style.left = "0px";
+			var startpos = this.menuElementEntryHolder.getBoundingClientRect().bottom;
+			var paddingAdd = this.MenuPaddingUsed * 2; // top and bottom
+			menupane.style.top =  startpos + "px";
+			menupane.style.position = 'fixed';
+			
+			var dvhsupported = false;
+			if (typeof CSS !== "undefined" && typeof CSS.supports !== "undefined")
+				dvhsupported = CSS.supports('height: 100dvh');
+			
+			if (dvhsupported)
+				menupane.style.maxHeight = 'calc(-' + (startpos+paddingAdd) + 'px + 100dvh)'; // dvh for mobile safari because floating address bar would overlap otherwise
+			else
+				menupane.style.maxHeight = 'calc(-' + (startpos+paddingAdd) + 'px + 100vh)';
+			
+			menupane.style.overflowY = 'scroll';
+						
+			// the mobile menu is fixed to overlap other elements, but we still need it to scroll vertically, so make it do this with
+			// the following code, *unless* the parent menu or its containing container is also fixed, then we must not do this since it 
+			// would scroll out of the view
+			if (!isElemFixed(htmlelement))
+				makeElementScroll(menupane, startpos);
+						
+			// add close button
+			var closebtn = document.createElement("a");							
+			closebtn.href = 'javascript:void(0)';									
+			closebtn.style.cssText = 'position: absolute; top: 0; right: 30px; font-size: 42px; text-decoration: none;'; 
+			closebtn.style.color = this.mobileMenuCloseButtonColor;
+			closebtn.textContent = '×'; // × or × or &times;					
+			closebtn.ariaLabel = 'close menu';
+			menupane.appendChild(closebtn);					
+		}
+		
 		this.setStylesForVisibilityOfMenuPane(menupane, false);
 						
 		return menupane;
 	}
+	
+	function makeElementScroll(element, startpos) 
+	{
+		function updatePosition() 
+		{
+			element.style.top = (startpos - window.scrollY) + 'px';
+
+			requestAnimationFrame(updatePosition);			
+		}
+
+		updatePosition();
+	}
+
+
+	function isElemFixed(elm) 
+	{
+		while (elm && elm.nodeName.toLowerCase() !== 'body')
+		{
+			if (window.getComputedStyle(elm).getPropertyValue('position').toLowerCase() === 'fixed')
+				return true;
+			elm = elm.parentNode;
+		}
+		return false; 
+	}
+
 	
 	this.closeAllMenus = function()
 	{
@@ -256,14 +487,18 @@ function wsp_menu(elementid, menuidsuffix, panepadding, animations, openViaMouse
 			
 			// also, update position
 			var htmlelement = newpane.creationParentMenuElement;
-			newpane.style.left = (htmlelement.offsetLeft) + "px";
-			newpane.style.top = (htmlelement.clientHeight) + "px";
-			this.ensureNotOutsideOfScreen(newpane);
+			
+			if (newpane.style.position != 'fixed') // don't modify position of fullscreen window
+			{
+				newpane.style.left = (htmlelement.offsetLeft) + "px";			
+				newpane.style.top = (htmlelement.clientHeight) + "px";
+				this.ensureNotOutsideOfScreen(newpane);
+			}
 		}
 	}
 	
 	// main menu item hovered
-	this.onMenuitemHovered = function(itemHovered, actuallyThisWasAClick)
+	this.onMenuitemHoveredOrClicked = function(itemHovered, actuallyThisWasAClick)
 	{
 		WspMenusLastTimeClicked = this.getTimeMs();
 			
@@ -273,8 +508,13 @@ function wsp_menu(elementid, menuidsuffix, panepadding, animations, openViaMouse
 			if (itemHovered === this.rootMenuElements[i])
 			{
 				var closeMenuAgain = false;
-				if (actuallyThisWasAClick && !this.openViaMouseHovering && this.isMenuPaneWithIndexOpen(i))
+				
+				if (actuallyThisWasAClick 
+					&& (this.openAndCloseViaClick || this.rootMenuElements[i].openAndCloseViaClick) // <- fullscreen mobile menus will open close via click and can override the global setting
+					&& this.isMenuPaneWithIndexOpen(i))
+				{
 					closeMenuAgain = true;
+				}
 				
 				this.closeAllMenus();
 				
@@ -339,15 +579,15 @@ function wsp_menu(elementid, menuidsuffix, panepadding, animations, openViaMouse
 	{
 		if (show)
 		{
-			if (!this.UseAnimation)
+			if (!menupane.UseAnimation)
 				menupane.style.display = 'block'; // reduces viewport size if animations are not necessary
 			
 			menupane.style.visibility = 'visible';	
 
-			if (this.UseAnimation && this.isUsingFadeMenuPaneAnimations())
+			if (menupane.UseAnimation && this.isUsingFadeMenuPaneAnimations(menupane))
 				menupane.style.opacity = 1;		
 
-			if (this.UseAnimation && this.isUsingMoveHeightAnimations())
+			if (menupane.UseAnimation && this.isUsingMoveHeightAnimations(menupane))
 				for (var j=0; j<menupane.aentries.length; ++j)
 				{
 					menupane.aentries[j].style.transition = "margin 0.5s ease";
@@ -357,28 +597,28 @@ function wsp_menu(elementid, menuidsuffix, panepadding, animations, openViaMouse
 		else
 		{
 			// hide
-			if (!this.UseAnimation)
+			if (!menupane.UseAnimation)
 				menupane.style.display = 'none'; // reduces viewport size if animations are not necessary
 			
 			menupane.style.visibility = 'hidden';
 			
-			if (this.UseAnimation && this.isUsingFadeMenuPaneAnimations())
+			if (menupane.UseAnimation && this.isUsingFadeMenuPaneAnimations(menupane))
 				menupane.style.opacity = 0;		
 
-			if (this.UseAnimation && this.isUsingMoveHeightAnimations())
+			if (menupane.UseAnimation && this.isUsingMoveHeightAnimations(menupane))
 				for (var j=0; j<menupane.aentries.length; ++j)
 					menupane.aentries[j].style.marginTop = (10 + j*-10) + 'px';	
 		}
 	}
 	
-	this.isUsingMoveHeightAnimations = function()
+	this.isUsingMoveHeightAnimations = function(menupane)
 	{
-		return this.EnabledAnimations && this.EnabledAnimations.indexOf('moveHeight') >= 0;
+		return menupane.EnabledAnimations && menupane.EnabledAnimations.indexOf('moveHeight') >= 0;
 	}
 	
-	this.isUsingFadeMenuPaneAnimations = function()
+	this.isUsingFadeMenuPaneAnimations = function(menupane)
 	{
-		return this.EnabledAnimations && this.EnabledAnimations.indexOf('fadeMenus') >= 0;
+		return menupane.EnabledAnimations && menupane.EnabledAnimations.indexOf('fadeMenus') >= 0;
 	}
 		
 	this.getElementAbsPosition = function(element) 
